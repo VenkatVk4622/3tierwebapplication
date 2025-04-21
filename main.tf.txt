@@ -1,0 +1,142 @@
+provider "aws" {
+  region = var.aws_region
+}
+
+# VPC Setup (via Module)
+module "vpc" {
+  source = "./vpc"
+}
+
+# Security Groups Setup (via Module)
+module "security_groups" {
+  source     = "./security_groups"
+  vpc_id     = module.vpc.vpc_id
+  web_subnet = module.vpc.public_subnets[0]
+  app_subnet = module.vpc.private_subnets[0]
+}
+
+# EC2 Web Tier
+resource "aws_launch_template" "web" {
+  name_prefix   = "web-template"
+  image_id      = "ami-0c55b159cbfafe1f0"  # Replace with your desired AMI ID
+  instance_type = "t2.micro"
+  key_name      = var.key_name
+
+  user_data = filebase64("${path.module}/userdata/web.sh")
+
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [module.security_groups.web_sg_id]
+  }
+}
+
+resource "aws_autoscaling_group" "web_asg" {
+  launch_template {
+    id      = aws_launch_template.web.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier = module.vpc.public_subnets
+  desired_capacity    = 2
+  max_size            = 3
+  min_size            = 1
+  health_check_type   = "EC2"
+}
+
+# EC2 App Tier
+resource "aws_launch_template" "app" {
+  name_prefix   = "app-template"
+  image_id      = "ami-0c55b159cbfafe1f0"  # Replace with your desired AMI ID
+  instance_type = "t2.micro"
+  key_name      = var.key_name
+
+  user_data = filebase64("${path.module}/userdata/app.sh")
+
+  network_interfaces {
+    associate_public_ip_address = false
+    security_groups             = [module.security_groups.app_sg_id]
+  }
+}
+
+resource "aws_autoscaling_group" "app_asg" {
+  launch_template {
+    id      = aws_launch_template.app.id
+    version = "$Latest"
+  }
+  vpc_zone_identifier = module.vpc.private_subnets
+  desired_capacity    = 2
+  max_size            = 3
+  min_size            = 1
+  health_check_type   = "EC2"
+}
+
+# Application Load Balancer (ALB)
+resource "aws_lb" "web_alb" {
+  name               = "web-alb"
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = module.vpc.public_subnets
+  security_groups    = [module.security_groups.web_sg_id]
+}
+
+resource "aws_lb_target_group" "web_tg" {
+  name     = "web-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = module.vpc.vpc_id
+}
+
+resource "aws_lb_listener" "web_listener" {
+  load_balancer_arn = aws_lb.web_alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web_tg.arn
+  }
+}
+
+# RDS Database
+resource "aws_secretsmanager_secret" "db_secret" {
+  name        = "rds-db-secret"
+  description = "RDS credentials for the application"
+}
+
+resource "aws_secretsmanager_secret_version" "db_secret_version" {
+  secret_id     = aws_secretsmanager_secret.db_secret.id
+  secret_string = jsonencode({
+    username = var.db_username
+    password = var.db_password
+  })
+}
+
+resource "aws_db_instance" "main" {
+  identifier             = "mydb"
+  engine                 = "mysql"  # You can change this to your desired engine like postgres
+  instance_class         = "db.t3.micro"
+  allocated_storage      = 20
+  username               = var.db_username
+  password               = var.db_password
+  db_subnet_group_name   = aws_db_subnet_group.default.name
+  vpc_security_group_ids = [module.security_groups.db_sg_id]
+  skip_final_snapshot    = true
+}
+
+# RDS Subnet Group
+resource "aws_db_subnet_group" "default" {
+  name       = "rds-subnet-group"
+  subnet_ids = module.vpc.private_subnets
+}
+
+# Output Values
+output "web_app_url" {
+  value = aws_lb.web_alb.dns_name
+}
+
+output "rds_endpoint" {
+  value = aws_db_instance.main.endpoint
+}
+
+output "db_secret_arn" {
+  value = aws_secretsmanager_secret.db_secret.arn
+}

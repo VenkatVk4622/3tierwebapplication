@@ -1,0 +1,17 @@
+variable "aws_region" {
+  description = "The AWS region to deploy resources into"
+}
+
+variable "db_username" {
+  description = "The database username for RDS"
+}
+
+variable "db_password" {
+  description = "The database password for RDS"
+  sensitive   = true
+}
+
+variable "key_name" {
+  description = "The name of the key pair to use for EC2 instances"
+  type        = string
+}

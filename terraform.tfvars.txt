@@ -1,0 +1,4 @@
+aws_region = "us-east-1"
+db_username = "admin"
+db_password = "your-secure-db-password"
+key_name = "your-ec2-key-pair-name"
